@@ -1,0 +1,434 @@
+#!/bin/sh
+. /usr/share/libubox/jshn.sh
+
+log() {
+	st=$(date)
+	[ -d /var/log/lorawan_gateway/ ] && echo "[${st}][lwgw_gen_cfg]:$1" >>/var/log/lorawan_gateway/runlog
+}
+
+# parse argv
+gDevPath=""
+while getopts "d:" arg; do
+	case $arg in
+	d)
+		gDevPath=$OPTARG
+		;;
+	?)
+		echo "       {-d </dev/xxx>   - spidev device path,default /dev/spidev32766.1}"
+		exit 1
+		;;
+	esac
+done
+
+gwid=$(uci get lwgw.general.GWID)
+provider=$(uci get lwgw.general.provider)
+server=$(uci get lwgw.general.${provider}_server)
+upp=$(uci get lwgw.general.upp)
+dpp=$(uci get lwgw.general.dpp)
+kil=$(uci get lwgw.general.keepalive_interval)
+stat=$(uci get lwgw.general.stat)
+ptm=$(uci get lwgw.general.push_timeout_ms)
+bp=$(uci get lwgw.general.beacon_period)
+bfh=$(uci get lwgw.general.beacon_freq_hz)
+bd=$(uci get lwgw.general.beacon_datarate)
+bbh=$(uci get lwgw.general.beacon_bw_hz)
+bpr=$(uci get lwgw.general.beacon_power)
+bif=$(uci get lwgw.general.beacon_infodesc)
+rflt=$(uci get lwgw.general.ref_latitude)
+rflg=$(uci get lwgw.general.ref_longitude)
+rfat=$(uci get lwgw.general.ref_altitude)
+freqb=$(uci get lwgw.general.frequency_band)
+board=$(cat /etc/board.info)
+
+#
+# "gateway_conf": {
+#     "gateway_ID": "AA555A0000000000",
+#     /* change with default server address/ports */
+#     "server_address": "localhost",
+#     "serv_port_up": 1730,
+#     "serv_port_down": 1730,
+#     /* adjust the following parameters for your network */
+#     "keepalive_interval": 10,
+#     "stat_interval": 30,
+#     "push_timeout_ms": 100,
+#     /* forward only valid packets */
+#     "forward_crc_valid": true,
+#     "forward_crc_error": false,
+#     "forward_crc_disabled": false,
+#     /* GPS configuration */
+#     "gps_tty_path": "/dev/ttyS0",
+#     /* GPS reference coordinates */
+#     "ref_latitude": 0.0,
+#     "ref_longitude": 0.0,
+#     "ref_altitude": 0,
+#     /* Beaconing parameters */
+#     "beacon_period": 0,
+#     "beacon_freq_hz": 869525000,
+#     "beacon_datarate": 9,
+#     "beacon_bw_hz": 125000,
+#     "beacon_power": 14,
+#     "beacon_infodesc": 0
+# },
+#
+
+gen_gateway_conf() {
+	json_add_object gateway_conf
+
+	euiRet=$(/usr/bin/chip_id -d "${gDevPath}")
+	if [ "${euiRet}" == "" ]; then
+		log "euiRet is null"
+		exit 1
+	fi
+	euiRet=$(echo ${euiRet} | grep "INFO: concentrator EUI: " | sed 's/.*concentrator//g' | awk -F' ' '{print $2}')
+	eui=${euiRet:2:16}
+	if [ "$eui" == "" ]; then
+		log "eui is null"
+		exit 1
+	fi
+	echo "$eui" >/etc/lorawan_gw_config/gw_eui.info
+	euiRet=$(uci set lwgw.general.GWID=$eui)
+	euiRet=$(uci commit lwgw)
+	json_add_string "gateway_ID" "$eui"
+	json_add_string "server_address" "$server"
+	json_add_int "serv_port_up" "$upp"
+	json_add_int "serv_port_down" "$dpp"
+	json_add_int "keepalive_interval" "$kil"
+	json_add_int "stat_interval" "$stat"
+	json_add_int "push_timeout_ms" "$ptm"
+	json_add_boolean "forward_crc_valid" 1
+	json_add_boolean "forward_crc_error" 0
+	[ $board == "MC7628_GAS" ] &&
+		json_add_string "gps_tty_path" "/dev/ttyUSB0"
+	[ $board == "QUECTEL_SX1302" ] &&
+		json_add_string "gps_tty_path" "/dev/ttyUSB0"
+	json_add_int "beacon_period" "$bp"
+	json_add_int "beacon_freq_hz" "$bfh"
+	json_add_int "beacon_datarate" "$bd"
+	json_add_int "beacon_bw_hz" "$bbh"
+	json_add_int "beacon_power" "$bpr"
+	json_add_int "beacon_infodesc" "$bif"
+	json_add_int "ref_latitude" $rflt
+	json_add_int "ref_longitude" $rflg
+	json_add_int "ref_altitude" $rfat
+	json_close_object
+}
+
+#
+# "SX130x_conf": {
+# 		"com_type": "SPI",
+# 		"com_path": "/dev/spidev0.0",
+# 		"lorawan_public": true,
+# 		"clksrc": 0,
+# 		"antenna_gain": 0, /* antenna gain, in dBi */
+# 		"full_duplex": false,
+# 		"fine_timestamp": {
+# 				"enable": false,
+# 				"mode": "all_sf" /* high_capacity or all_sf */
+# 		},
+# 		"radio_0": {
+# 				"enable": true,
+# 				"type": "SX1250",
+# 				"single_input_mode": true,
+# 				"freq": 471400000,
+# 				"rssi_offset": -207.0,
+# 				"rssi_tcomp": {"coeff_a": 0, "coeff_b": 0, "coeff_c": 20.41, "coeff_d": 2162.56, "coeff_e": 0},
+# 				"tx_enable": true,
+# 				"tx_freq_min": 500000000,
+# 				"tx_freq_max": 510000000,
+# 				"tx_gain_lut":[
+# 						{"rf_power": -6, "pa_gain": 0, "pwr_idx":  0},
+# 						{"rf_power": -3, "pa_gain": 0, "pwr_idx":  1},
+# 						{"rf_power":  0, "pa_gain": 0, "pwr_idx":  2},
+# 						{"rf_power":  3, "pa_gain": 1, "pwr_idx":  3},
+# 						{"rf_power":  6, "pa_gain": 1, "pwr_idx":  4},
+# 						{"rf_power": 10, "pa_gain": 1, "pwr_idx":  5},
+# 						{"rf_power": 11, "pa_gain": 1, "pwr_idx":  6},
+# 						{"rf_power": 12, "pa_gain": 1, "pwr_idx":  7},
+# 						{"rf_power": 13, "pa_gain": 1, "pwr_idx":  8},
+# 						{"rf_power": 14, "pa_gain": 1, "pwr_idx":  9},
+# 						{"rf_power": 16, "pa_gain": 1, "pwr_idx": 10},
+# 						{"rf_power": 20, "pa_gain": 1, "pwr_idx": 11},
+# 						{"rf_power": 23, "pa_gain": 1, "pwr_idx": 12},
+# 						{"rf_power": 25, "pa_gain": 1, "pwr_idx": 13},
+# 						{"rf_power": 26, "pa_gain": 1, "pwr_idx": 14},
+# 						{"rf_power": 27, "pa_gain": 1, "pwr_idx": 15}
+# 				]
+# 		},
+# 		"radio_1": {
+# 				"enable": true,
+# 				"type": "SX1250",
+# 				"single_input_mode": true,
+# 				"freq": 475000000,
+# 				"rssi_offset": -207.0,
+# 				"rssi_tcomp": {"coeff_a": 0, "coeff_b": 0, "coeff_c": 20.41, "coeff_d": 2162.56, "coeff_e": 0},
+# 				"tx_enable": false
+# 		},
+# 		"chan_multiSF_All": {"spreading_factor_enable": [ 5, 6, 7, 8, 9, 10, 11, 12 ]},
+# 		"chan_multiSF_0": {"enable": true, "radio": 0, "if": -300000},
+# 		"chan_multiSF_1": {"enable": true, "radio": 0, "if": -100000},
+# 		"chan_multiSF_2": {"enable": true, "radio": 0, "if":  100000},
+# 		"chan_multiSF_3": {"enable": true, "radio": 0, "if":  300000},
+# 		"chan_multiSF_4": {"enable": true, "radio": 1, "if": -300000},
+# 		"chan_multiSF_5": {"enable": true, "radio": 1, "if": -100000},
+# 		"chan_multiSF_6": {"enable": true, "radio": 1, "if":  100000},
+# 		"chan_multiSF_7": {"enable": true, "radio": 1, "if":  300000},
+# 		"chan_Lora_std":  {"enable": true, "radio": 1, "if": -200000, "bandwidth": 250000, "spread_factor": 7,
+# 												"implicit_hdr": false, "implicit_payload_length": 17, "implicit_crc_en": false, "implicit_coderate": 1},
+# 		"chan_FSK":       {"enable": true, "radio": 1, "if":  300000, "bandwidth": 125000, "datarate": 50000}
+# },
+#
+
+gen_SX130x_conf() {
+	# json_init
+	json_add_object SX130x_conf
+	res=$(echo $s1 | grep "USB")
+	if [[ "$res" != "" ]]; then
+		ct="USB"
+	else
+		ct="SPI"
+	fi
+	json_add_string "com_type" "${ct}"
+	json_add_string "com_path" "${gDevPath}"
+	json_add_boolean lorawan_public 1
+	json_add_int clksrc 0
+	json_add_int antenna_gain 0
+	json_add_boolean full_duplex false
+
+	json_add_object fine_timestamp
+	json_add_boolean enable 0
+	json_add_string "mode" "all_sf"
+	json_close_object
+
+	json_add_object radio_0
+	radio0_enable=$(uci get lwgw.general.radio0_enable)
+	json_add_boolean enable $radio0_enable
+	radio0_type=$(uci get lwgw.general.radio0_type)
+	json_add_string type "${radio0_type}"
+	radio0_single_input_mode=$(uci get lwgw.general.radio0_single_input_mode)
+	json_add_boolean single_input_mode $radio0_single_input_mode
+	radio0_freq=$(uci get lwgw.general.radio0_freq)
+	json_add_int freq $radio0_freq
+	radio0_rssi_offset=$(uci get lwgw.general.radio0_rssi_offset)
+	json_add_double rssi_offset $radio0_rssi_offset
+	json_add_object rssi_tcomp
+	radio0_rssi_tcomp_coeff_a=$(uci get lwgw.general.radio0_rssi_tcomp_coeff_a)
+	json_add_double coeff_a $radio0_rssi_tcomp_coeff_a
+	radio0_rssi_tcomp_coeff_b=$(uci get lwgw.general.radio0_rssi_tcomp_coeff_b)
+	json_add_double coeff_b $radio0_rssi_tcomp_coeff_b
+	radio0_rssi_tcomp_coeff_c=$(uci get lwgw.general.radio0_rssi_tcomp_coeff_c)
+	json_add_double coeff_c $radio0_rssi_tcomp_coeff_c
+	radio0_rssi_tcomp_coeff_d=$(uci get lwgw.general.radio0_rssi_tcomp_coeff_d)
+	json_add_double coeff_d $radio0_rssi_tcomp_coeff_d
+	radio0_rssi_tcomp_coeff_e=$(uci get lwgw.general.radio0_rssi_tcomp_coeff_e)
+	json_add_double coeff_e $radio0_rssi_tcomp_coeff_e
+	json_close_object
+	radio0_tx_enable=$(uci get lwgw.general.radio0_tx_enable)
+	json_add_boolean tx_enable $radio0_tx_enable
+	radio0_txfreq_min=$(uci get lwgw.general.radio0_txfreq_min)
+	json_add_int tx_freq_min $radio0_txfreq_min
+	radio0_txfreq_max=$(uci get lwgw.general.radio0_txfreq_max)
+	json_add_int tx_freq_max $radio0_txfreq_max
+
+	json_add_array tx_gain_lut
+	json_add_object
+	json_add_int rf_power "-6"
+	json_add_int pa_gain "0"
+	json_add_int pwr_idx "0"
+	json_close_object
+	json_add_object
+	json_add_int rf_power "-3"
+	json_add_int pa_gain "0"
+	json_add_int pwr_idx "1"
+	json_close_object
+	json_add_object
+	json_add_int rf_power "0"
+	json_add_int pa_gain "0"
+	json_add_int pwr_idx "2"
+	json_close_object
+	json_add_object
+	json_add_int rf_power "3"
+	json_add_int pa_gain "1"
+	json_add_int pwr_idx "3"
+	json_close_object
+	json_add_object
+	json_add_int rf_power "6"
+	json_add_int pa_gain "1"
+	json_add_int pwr_idx "4"
+	json_close_object
+	json_add_object
+	json_add_int rf_power "10"
+	json_add_int pa_gain "1"
+	json_add_int pwr_idx "5"
+	json_close_object
+	json_add_object
+	json_add_int rf_power "11"
+	json_add_int pa_gain "1"
+	json_add_int pwr_idx "6"
+	json_close_object
+	json_add_object
+	json_add_int rf_power "12"
+	json_add_int pa_gain "1"
+	json_add_int pwr_idx "7"
+	json_close_object
+	json_add_object
+	json_add_int rf_power "13"
+	json_add_int pa_gain "1"
+	json_add_int pwr_idx "8"
+	json_close_object
+	json_add_object
+	json_add_int rf_power "14"
+	json_add_int pa_gain "1"
+	json_add_int pwr_idx "9"
+	json_close_object
+	json_add_object
+	json_add_int rf_power "16"
+	json_add_int pa_gain "1"
+	json_add_int pwr_idx "10"
+	json_close_object
+	json_add_object
+	json_add_int rf_power "20"
+	json_add_int pa_gain "1"
+	json_add_int pwr_idx "11"
+	json_close_object
+	json_add_object
+	json_add_int rf_power "23"
+	json_add_int pa_gain "1"
+	json_add_int pwr_idx "12"
+	json_close_object
+	json_add_object
+	json_add_int rf_power "25"
+	json_add_int pa_gain "1"
+	json_add_int pwr_idx "13"
+	json_close_object
+	json_add_object
+	json_add_int rf_power "26"
+	json_add_int pa_gain "1"
+	json_add_int pwr_idx "14"
+	json_close_object
+	json_add_object
+	json_add_int rf_power "27"
+	json_add_int pa_gain "1"
+	json_add_int pwr_idx "15"
+	json_close_object
+	json_select ..
+	json_select tx_gain_lut
+	json_close_object
+	json_close_object
+	json_add_object radio_1
+	radio1_enable=$(uci get lwgw.general.radio1_enable)
+	json_add_boolean enable $radio1_enable
+	radio1_type=$(uci get lwgw.general.radio1_type)
+	json_add_string type "${radio1_type}"
+	radio1_single_input_mode=$(uci get lwgw.general.radio1_single_input_mode)
+	json_add_boolean single_input_mode $radio1_single_input_mode
+	radio1_freq=$(uci get lwgw.general.radio1_freq)
+	json_add_int freq $radio1_freq
+	radio1_rssi_offset=$(uci get lwgw.general.radio1_rssi_offset)
+	json_add_double rssi_offset $radio1_rssi_offset
+	json_add_object rssi_tcomp
+	radio1_rssi_tcomp_coeff_a=$(uci get lwgw.general.radio1_rssi_tcomp_coeff_a)
+	json_add_double coeff_a $radio1_rssi_tcomp_coeff_a
+	radio1_rssi_tcomp_coeff_b=$(uci get lwgw.general.radio1_rssi_tcomp_coeff_b)
+	json_add_double coeff_b $radio1_rssi_tcomp_coeff_b
+	radio1_rssi_tcomp_coeff_c=$(uci get lwgw.general.radio1_rssi_tcomp_coeff_c)
+	json_add_double coeff_c $radio1_rssi_tcomp_coeff_c
+	radio1_rssi_tcomp_coeff_d=$(uci get lwgw.general.radio1_rssi_tcomp_coeff_d)
+	json_add_double coeff_d $radio1_rssi_tcomp_coeff_d
+	radio1_rssi_tcomp_coeff_e=$(uci get lwgw.general.radio1_rssi_tcomp_coeff_e)
+	json_add_double coeff_e $radio1_rssi_tcomp_coeff_e
+	json_close_object
+	radio1_tx_enable=$(uci get lwgw.general.radio1_tx_enable)
+	json_add_boolean tx_enable $radio1_tx_enable
+	json_close_object
+
+	json_add_object chan_multiSF_All
+	json_add_array spreading_factor_enable
+	json_add_int "" "5"
+	json_add_int "" "6"
+	json_add_int "" "7"
+	json_add_int "" "8"
+	json_add_int "" "9"
+	json_add_int "" "10"
+	json_add_int "" "11"
+	json_add_int "" "12"
+	json_select ..
+	json_select spreading_factor_enable
+	json_close_object
+	json_close_object
+
+	echo "sx130x conf" >/etc/lorawan_gw_config/freq.conf
+	echo "------------------------------------------------" >>/etc/lorawan_gw_config/freq.conf
+	for i in $(seq 0 7); do
+		eval chan${i}_enable=$(uci get lwgw.general.chan${i}_enable)
+		json_add_object chan_multiSF_"$i"
+		eval json_add_boolean enable \$chan${i}_enable
+		eval cmp="\$chan${i}_enable"
+		if [ "$cmp" = "1" ]; then
+			eval chan${i}=$(uci get lwgw.general.chan${i})
+			eval chan${i}_radio=$(uci get lwgw.general.chan${i}_radio)
+			eval radio_index=\$chan${i}_radio
+			eval radio_freq=\$radio${radio_index}_freq
+			eval json_add_int "radio" \$chan${i}_radio
+			eval json_add_int "if" \$chan${i}
+		fi
+		json_close_object
+		echo "chan_multSF_$i" >>/etc/lorawan_gw_config/freq.conf
+		uci get lwgw.general.chan${i}_radio >>/etc/lorawan_gw_config/freq.conf
+		echo "---------------------------------------" >>/etc/lorawan_gw_config/freq.conf
+	done
+	echo "------------------------------------------------" >>/etc/lorawan_gw_config/freq.conf
+	json_add_object chan_Lora_std
+	json_add_boolean enable 1
+	json_add_int "radio" "1"
+	json_add_int "if" "-200000"
+	json_add_int "bandwidth" "250000"
+	json_add_int "spread_factor" "7"
+	json_add_boolean implicit_hdr 0
+	json_add_int "implicit_payload_length" "17"
+	json_add_boolean implicit_crc_en 0
+	json_add_int "implicit_coderate" "1"
+	json_close_object
+
+	json_add_object chan_FSK
+	json_add_boolean enable 1
+	json_add_int "radio" "1"
+	json_add_int "if" "300000"
+	json_add_int "bandwidth" "125000"
+	json_add_int "datarate" "50000"
+	json_close_object
+	json_close_object
+}
+
+gen_debug_conf() {
+	json_add_object debug_conf
+	json_add_array ref_payload
+	json_add_object
+	json_add_string "id" "0xCAFE1234"
+	json_close_object
+	json_add_object
+	json_add_string "id" "0xCAFE2345"
+	json_close_object
+	json_select ..
+	json_select ref_payload
+	json_close_object
+	json_add_string "log_file" "loragw_hal.log"
+	json_close_object
+}
+
+# main
+if [ -f "/etc/lorawan_gw_config/local_${freqb}_conf.json" ]; then
+	rm -f "/etc/lorawan_gw_config/local_${freqb}_conf.json"
+fi
+touch "/etc/lorawan_gw_config/local_${freqb}_conf.json"
+
+json_init
+gen_gateway_conf
+gen_SX130x_conf
+gen_debug_conf
+json_dump >>/etc/lorawan_gw_config/local_${freqb}_conf.json
+
+# bugs 对于路径解析后将会变成"\/dev\/spidev0.0" 2021.08.07
+sed -i 's/\\//g' /etc/lorawan_gw_config/local_${freqb}_conf.json
+
+cp -f /etc/lorawan_gw_config/local_${freqb}_conf.json /etc/lorawan_gw_config/global_conf.json
+exit 0

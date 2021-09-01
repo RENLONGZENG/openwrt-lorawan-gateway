@@ -1,0 +1,67 @@
+#!/bin/sh /etc/rc.common
+
+START=60
+USE_PROCD=6
+STOP=15
+
+log_tag=$0
+
+process="lora_pkt_fwd"
+process_startup="lwgw_startup"
+
+init_board() {
+	board=$(cat /etc/board.info)
+	echo "[${log_tag}] info: lorawan gateway board config bd is $board" >/dev/kmsg
+	spidev=$(ls /dev/spi* | awk -F' ' '{print $1}')
+	if [ "${spidev}" == "" ]; then
+		echo "[${log_tag}] error: spidev device is none, please check" >/dev/kmsg
+		exit 1
+	fi
+	if [ "${board}" == "MC7628_GAS" ]; then
+		/usr/bin/lwgw_gen_cfg -d "${spidev}" >/dev/kmsg
+	elif [ "${board}" == "QUECTEL_SX1302" ]; then
+		if [ "${spidev}" == "" ]; then
+			insmod /usr/lib/modules/$(uname -r)/kernel/drivers/spi/spidev.ko >/dev/kmsg
+			if [ $? -ne 0 ]; then
+				echo "insmod spidev.ko failed" >/dev/kmsg
+				exit 1
+			fi
+		fi
+		/usr/bin/lwgw_gen_cfg -d "${spidev}" >/dev/kmsg
+	else
+		echo "error /etc/board.info:${board}" >/dev/kmsg
+		exit 1
+	fi
+	echo "init lorawan gateway board success" >/dev/kmsg
+}
+
+start_service() {
+	echo -n "lorawan gateway service start..." >/dev/kmsg
+	init_board
+	procd_open_instance
+	procd_set_param command /usr/bin/"${process_startup}" -g -d "${spidev}" -f /etc/lorawan_gw_config/
+	procd_set_param file /etc/lorawan_gw_config/global_conf.json
+	# procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_set_param respawn 360 5 0
+	procd_set_param pidfile /var/run/"${process}".pid
+	procd_close_instance
+}
+
+stop_service() {
+	echo -n "lorawan gateway service stop..." >/dev/kmsg
+	kill -9 $(ps | grep "${process_startup}" | grep "/etc/lorawan_gw_config/" | awk -F' ' '{print $1}')
+	kill -9 $(ps | grep "${process}" | grep "/etc/lorawan_gw_config/" | awk -F' ' '{print $1}')
+}
+
+reload_service() {
+	stop
+	start
+}
+
+service_triggers() {
+	procd_add_reload_trigger "network" "wireless" "gateway"
+	for iface in $(cat /etc/config/network | grep interface | awk -F "\'" '{print $2}'); do
+		procd_add_interface_trigger "interface.*.up" "$iface" /etc/init.d/lwgw_service reload
+	done
+}

@@ -1,0 +1,4 @@
+[submodule "sx1302_hal"]
+	path = sx1302_hal
+	url = https://github.com/yunzhaoyu2050/sx1302_hal.git
+	branch = openwrt

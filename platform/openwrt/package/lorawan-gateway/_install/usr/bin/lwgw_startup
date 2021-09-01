@@ -1,0 +1,182 @@
+#!/bin/sh
+
+# reset操作在reset_lgw.sh脚本中存放
+
+logDir=/var/log/lorawan_gateway/
+logFileName="$logDir/runlog"
+fsize=2000000
+
+help() {
+  echo "unkonw argument"
+  echo "Usage: {-g              - start gateway, then auto get gateway eui and run}"
+  echo "       {-d </dev/xxx>   - spidev device path,default /dev/spidev32766.1}"
+  echo "       {-e              - get gateway eui}"
+  echo "       {-f </xxx/xxx>   - config file path}"
+  echo "       {-p </xxx/xxx>   - log file path,/xxx/xxx/runlog}"
+  echo "       {-t <CN490>      - gateway type:"
+  echo "                            CN490"
+  echo "                            CN490.USB"
+  echo "                            EU868"
+  echo "                            EU868.USB"
+  echo "                            US915"
+  echo "                            US915.USB"
+  echo "                            CN490.full-duplex"
+  echo "                            sx1257.EU868"
+  echo "                            AS923.USB}"
+}
+
+curPath=$(pwd)
+gDevPath=""
+gGatewayEui=""
+gGatewayType=""
+
+# echo start app...
+
+# parse argv
+cmdTask=""
+while getopts "gd:et:hf:p:" arg; do
+  case $arg in
+  g)
+    cmdTask="gateway"
+    ;;
+  d)
+    gDevPath=$OPTARG
+    ;;
+  e)
+    cmdTask="eui"
+    ;;
+  t)
+    gGatewayType=$OPTARG
+    ;;
+  h)
+    help
+    ;;
+  f)
+    curPath=$OPTARG
+    ;;
+  p)
+    logDir=$OPTARG
+    ;;
+  ?)
+    help
+    exit 1
+    ;;
+  esac
+done
+
+log() {
+  if [ ! -d $logDir ]; then
+    mkdir -p $logDir
+  fi
+  if [ ! -e "$logFileName" ]; then
+    touch $logFileName
+  fi
+  local curtime
+  # curtime=$(date +"%Y%m%d%H%M%S")
+  curtime=$(date)
+  local cursize
+  if [ ! -e "$logFileName" ]; then
+    echo "There is no log file!Not record log to file!"
+    return
+  fi
+  cursize=$(cat $logFileName | wc -c)
+  if [ $fsize -lt $cursize ]; then
+    # echo "backup old log file"
+    mv $logFileName $curtime".log"
+    touch $logFileName
+  fi
+  # echo "$curtime $*"
+  echo "[$curtime]: $*" | tee -a $logFileName
+}
+
+# main
+if [ "$cmdTask" == "gateway" ]; then
+  if [ -f ${curPath}/global_conf.json ]; then
+    /usr/bin/lora_pkt_fwd -c ${curPath}/global_conf.json | while read line; do
+      log $line
+    done
+    exit 0
+  else
+    if [ "$gDevPath" == "" ]; then
+      echo "please check -d option."
+      exit 1
+    fi
+    # 启动chip_id获取eui并填充至global_conf.json中
+    euiRet=$(/usr/bin/chip_id -d "${gDevPath}")
+    if [ "$euiRet" == "" ]; then
+      echo "euiRet is none"
+      exit 1
+    fi
+    euiRet=$(echo $euiRet | grep "INFO: concentrator EUI: " | sed 's/.*concentrator//g' | awk -F' ' '{print $2}')
+    eui=${euiRet:2:16}
+    if [ "$eui" == "" ]; then
+      echo "eui is none"
+      exit 1
+    fi
+    # 检查系统是否存在gw_eui.info
+    if [ -f /etc/lorawan_gw_config/gw_eui.info ]; then
+      echo "$eui" >/etc/lorawan_gw_config/gw_eui.info
+    else
+      if [ ! -d /etc/lorawan_gw_config/ ]; then
+        mkdir -p /etc/lorawan_gw_config/
+      fi
+      echo "$eui" >>/etc/lorawan_gw_config/gw_eui.info
+    fi
+    if [ "$gGatewayType" == "" ]; then
+      cp ${curPath}/global_conf.json.sx1250.CN490 ${curPath}/global_conf.json #default cn490
+    else
+      case $gGatewayType in
+      "CN490")
+        cp ${curPath}/global_conf.json.sx1250.CN490 ${curPath}/global_conf.json
+        ;;
+      "CN490.USB")
+        cp ${curPath}/global_conf.json.sx1250.CN490.USB ${curPath}/global_conf.json
+        ;;
+      "EU868")
+        cp ${curPath}/global_conf.json.sx1250.EU868 ${curPath}/global_conf.json
+        ;;
+      "EU868.USB")
+        cp ${curPath}/global_conf.json.sx1250.EU868.USB ${curPath}/global_conf.json
+        ;;
+      "US915")
+        cp ${curPath}/global_conf.json.sx1250.US915 ${curPath}/global_conf.json
+        ;;
+      "US915.USB")
+        cp ${curPath}/global_conf.json.sx1250.US915.USB ${curPath}/global_conf.json
+        ;;
+      "CN490.full-duplex")
+        cp ${curPath}/global_conf.json.sx1250.CN490.full-duplex ${curPath}/global_conf.json
+        ;;
+      "sx1257.EU868")
+        cp ${curPath}/global_conf.json.sx1257.EU868 ${curPath}/global_conf.json
+        ;;
+      "AS923.USB")
+        cp ${curPath}/global_conf.json.sx1250.AS923.USB ${curPath}/global_conf.json
+        ;;
+      ?)
+        echo "unkonw argument, please check -t option."
+        exit -1
+        ;;
+      esac
+    fi
+    # 将获取eui值和dev路径写入到global_conf.json中
+    #    "gateway_ID": "AA555A0000000000" default
+    #    "com_path": "/dev/spidev0.0"
+    # echo ">>>>>>>>>>>>>>>>>>>> dev:$gDevPath <<<<<<<<<<<<<<<<<<<<"
+    tmp=$(echo ${gDevPath} | sed 's/\//\\\//g')
+    sed -i "s/\"gateway_ID\": \"AA555A0000000000\"/\"gateway_ID\": \"${eui}\"/g" ${curPath}/global_conf.json
+    sed -i "s/dev\/spidev0.0\"/${tmp}\"/g" ${curPath}/global_conf.json
+    if [ $? -ne 0 ]; then
+      echo "sed process failed, please check."
+      exit 1
+    fi
+    /usr/bin/lora_pkt_fwd -c ${curPath}/global_conf.json | while read line; do
+      log $line
+    done
+    exit 0
+  fi
+elif [ "${cmdTask}" == "eui" ]; then
+  if [ "${gDevPath}" != "" ]; then
+    /usr/bin/chip_id -d "${gDevPath}"
+  fi
+fi
