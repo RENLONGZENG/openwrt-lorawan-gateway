@@ -1,7 +1,7 @@
 
 local m, s, o
 
-m = Map("lwgw", translate("LoRa Gateway Settings"), translate("Configuration to communicate with LoRa devices and LoRaWAN server"))
+m = Map("lwgw", translate("LoRaWan Gateway Settings"), translate("Configuration to communicate with LoRa devices and LoRaWAN server"))
 
 m:chain("luci")
 

@@ -1,4 +1,5 @@
 module("luci.controller.admin.gateway", package.seeall)
+require "luci.jsonc"
 
 function index()
   local uci = luci.model.uci.cursor()
@@ -23,8 +24,7 @@ end
 function lgwlog_action()
   local gw = require "luci.gw"
   luci.http.prepare_content("application/json")
-  luci.http.write("{ statistics: ")
-  local data = gw.net.gw_get_data()
-  luci.http.write(data[#data])
-  luci.http.write(" }")
+  local pre_data = gw.net.gw_get_data()
+  local result = luci.jsonc.parse(pre_data[#pre_data])
+  luci.http.write_json({statistics = result})
 end
